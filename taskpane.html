@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mail Ön Kontrol</title>
+  <script type="text/javascript" src="https://officeapis.public.onecdn.static.microsoft/1/office.js"></script>
+  <script type="text/javascript" src="launchevent.js?v=15"></script>
+  <style>
+    :root { --mavi: #105aa0; --kirmizi: #b00020; --yesil: #1b7f3b; --sari: #8a6d00; --zemin: #ffffff; --yazi: #1f2328; --ince: #e6e8eb; }
+    @media (prefers-color-scheme: dark) { :root { --zemin: #1f1f1f; --yazi: #eaeaea; --ince: #3a3a3a; --mavi: #5aa3e8; --kirmizi: #ff6b81; --yesil: #4cc38a; --sari: #e0c25a; } }
+    body { margin: 0; padding: 16px; font: 14px/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--zemin); color: var(--yazi); }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    p { margin: 0 0 12px; }
+    .kucuk { font-size: 12px; opacity: .75; }
+    button { width: 100%; padding: 10px; border: 0; border-radius: 6px; background: var(--mavi); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    #durum { margin-top: 12px; font-weight: 600; }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+    li { margin-bottom: 4px; }
+    .k { color: var(--kirmizi); } .y { color: var(--yesil); } .s { color: var(--sari); }
+    #surum { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--ince); }
+  </style>
+</head>
+<body>
+  <h1>Mail Ön Kontrol</h1>
+  <p>Bu e-posta <strong>Gönder</strong>'e bastığınızda otomatik olarak taranır. Göndermeden önce kontrol etmek için aşağıdaki butonu kullanabilirsiniz.</p>
+  <button id="tara" disabled>Şimdi Tara</button>
+  <div id="durum" class="kucuk">Yükleniyor…</div>
+  <div id="sonuc"></div>
+  <div id="surum" class="kucuk"></div>
+
+  <script>
+    function el(id) { return document.getElementById(id); }
+    function satir(sinif, metin) { var li = document.createElement("li"); li.className = sinif; li.textContent = metin; return li; }
+
+    Office.onReady(function () {
+      var destek = Office.context.requirements.isSetSupported("Mailbox", "1.12");
+      el("surum").textContent = "Eklenti yüklendi. Smart Alerts (Mailbox 1.12) desteği: " + (destek ? "VAR" : "YOK");
+      el("durum").textContent = "Hazır.";
+      el("tara").disabled = false;
+      el("tara").onclick = function () {
+        el("tara").disabled = true;
+        el("durum").className = "kucuk";
+        el("durum").textContent = "Taranıyor…";
+        el("sonuc").innerHTML = "";
+        denetle().then(function (s) {
+          var ul = document.createElement("ul");
+          if (s.icGonderim) {
+            el("durum").className = "y";
+            el("durum").textContent = "Tüm alıcılar kuruluş içi; tarama gerekmiyor.";
+          } else if (!s.bulgular.length && !s.taranamayan.length) {
+            el("durum").className = "y";
+            el("durum").textContent = "✔ Hassas veri bulunmadı.";
+          } else {
+            el("durum").className = s.bulgular.length ? "k" : "s";
+            el("durum").textContent = s.bulgular.length ? "✖ Hassas veri tespit edildi" : "! Bazı ekler taranamadı";
+            s.bulgular.forEach(function (b) { ul.appendChild(satir("k", b.yer + ": " + b.tur + " " + b.deger)); });
+            s.taranamayan.forEach(function (t) { ul.appendChild(satir("s", "Taranamadı: " + t)); });
+          }
+          el("sonuc").appendChild(ul);
+        }).catch(function (e) {
+          el("durum").className = "k";
+          el("durum").textContent = "Hata: " + ((e && e.message) || e);
+        }).then(function () { el("tara").disabled = false; });
+      };
+    });
+  </script>
+</body>
+</html>
