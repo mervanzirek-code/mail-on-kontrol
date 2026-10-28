@@ -825,8 +825,12 @@ function onMessageSendHandler(event) {
 }
 
 // Manifest'teki FunctionName ile JavaScript işlevini eşler (zorunlu)
-if (typeof Office !== "undefined" && Office.actions) {
-  Office.actions.associate("onMessageSendHandler", onMessageSendHandler);
+if (typeof Office !== "undefined") {
+  if (Office.actions) {
+    Office.actions.associate("onMessageSendHandler", onMessageSendHandler);
+  } else if (Office.onReady) {
+    Office.onReady(function () { Office.actions.associate("onMessageSendHandler", onMessageSendHandler); });
+  }
 }
 
 // Yalnızca test ortamı (Node.js) için
