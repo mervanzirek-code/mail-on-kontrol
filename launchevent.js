@@ -114,7 +114,8 @@ function cp1254Coz(b) {
 
 function metinCoz(b) {
   var s = utf8Coz(b, true);
-  return s === null ? cp1254Coz(b) : s;
+  if (s === null) return cp1254Coz(b);
+  return s;
 }
 
 function htmlVarlikCoz(s) {
@@ -290,7 +291,8 @@ var GORSEL_UZ = ["jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "heic", "web
 
 function uzanti(ad) {
   var m = /\.([^.\/\\]+)$/.exec(ad || "");
-  return m ? m[1].toLowerCase() : "";
+  if (m) return m[1].toLowerCase();
+  return "";
 }
 
 function xmlMetin(x) {
@@ -301,7 +303,8 @@ function xmlMetin(x) {
   x = htmlVarlikCoz(x);
   return x.replace(/\b\d\.\d+E\+\d{1,2}\b/g, function (m) {
     var v = Number(m);
-    return Number.isInteger(v) ? v.toFixed(0) : m;
+    if (Number.isInteger(v)) return v.toFixed(0);
+    return m;
   });
 }
 
@@ -382,7 +385,8 @@ function pdfNesneleri(b, s) {
       n.sozluk = govde.slice(0, sp);
       var vb = bas + sp + /stream\r?\n/.exec(govde.slice(sp))[0].length;
       var ve = s.indexOf("endstream", vb);
-      n.veri = b.subarray(vb, ve < 0 ? son : ve);
+      if (ve < 0) ve = son;
+      n.veri = b.subarray(vb, ve);
     }
     nesneler[m[1]] = n;
     re.lastIndex = son;
@@ -396,7 +400,8 @@ function pdfNesneleri(b, s) {
       var ilk = +(/\/First\s+(\d+)/.exec(n.sozluk) || [0, 0])[1];
       var basliklar = acik.slice(0, ilk).trim().split(/\s+/).map(Number);
       for (var i = 0; i + 1 < basliklar.length; i += 2) {
-        var bitis = i + 3 < basliklar.length ? ilk + basliklar[i + 3] : acik.length;
+        var bitis = acik.length;
+        if (i + 3 < basliklar.length) bitis = ilk + basliklar[i + 3];
         if (!nesneler[basliklar[i]]) nesneler[basliklar[i]] = { sozluk: acik.slice(ilk + basliklar[i + 1], bitis), veri: null };
       }
     } catch (e) { /* atla */ }
@@ -485,7 +490,8 @@ function pdfIcerikMetni(c, yaziTipleri, sayac) {
         var kod = 0;
         for (var q = 0; q < cmap.bayt; q++) kod = kod * 256 + bayt.charCodeAt(k + q);
         var h = cmap.harita[kod];
-        t += h !== undefined ? h : (cmap.bayt === 1 ? bayt[k] : "");
+        if (h !== undefined) t += h;
+        else if (cmap.bayt === 1) t += bayt[k];
       }
     } else if (cmap && cmap.eksik) {
       sayac.okunamayan += bayt.length;
@@ -511,7 +517,8 @@ function pdfIcerikMetni(c, yaziTipleri, sayac) {
             continue;
           }
           if (y === "\r" || y === "\n") { i += 2; continue; }
-          s += Object.prototype.hasOwnProperty.call(kacis, y) ? kacis[y] : y;
+          if (Object.prototype.hasOwnProperty.call(kacis, y)) s += kacis[y];
+          else s += y;
           i += 2;
           continue;
         }
@@ -538,7 +545,10 @@ function pdfIcerikMetni(c, yaziTipleri, sayac) {
     }
     if (/[A-Za-z'"*]/.test(ch)) {
       var op = /^[A-Za-z'"*]+/.exec(c.substr(i, 8))[0];
-      if (op === "Tf") cmap = yaziTipleri.hasOwnProperty(sonAd) ? yaziTipleri[sonAd] : null;
+      if (op === "Tf") {
+        cmap = null;
+        if (yaziTipleri.hasOwnProperty(sonAd)) cmap = yaziTipleri[sonAd];
+      }
       else if (op === "Td" || op === "TD" || op === "T*" || op === "Tm" || op === "'" || op === '"') out.push(" ");
       else if (op === "ET") out.push("\n");
       i += op.length;
@@ -584,7 +594,9 @@ function icerikMetni(ad, b, derinlik) {
   if (uz === "zip") return zipMetin(b, derinlik || 0);
   if (uz === "doc" || uz === "xls" || uz === "ppt") throw new Taranamadi("eski Office biçimi");
   if (GORSEL_UZ.indexOf(uz) >= 0) throw new Taranamadi("görsel dosya");
-  throw new Taranamadi("desteklenmeyen dosya türü" + (uz ? " (." + uz + ")" : ""));
+  var uzMetin = "";
+  if (uz) uzMetin = " (." + uz + ")";
+  throw new Taranamadi("desteklenmeyen dosya türü" + uzMetin);
 }
 
 /* =====================================================================
@@ -757,7 +769,10 @@ function denetle() {
   });
 }
 
-function kisalt(s, n) { return s.length <= n ? s : s.slice(0, n - 1) + "…"; }
+function kisalt(s, n) {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + "…";
+}
 
 function basligiYaz(deger) {
   try {
@@ -783,9 +798,8 @@ function sonuclandir(event, s) {
   }
   if (s.bulgular.length) {
     var satirlar = s.bulgular.map(function (b) { return "• " + b.yer + ": " + b.tur + " " + b.deger; });
-    var mesaj = AYARLAR.BULGUDA_ENGELLE
-      ? "GİZLİ BİLGİ TESPİT EDİLDİ. Göndermeden önce bu bilgileri çıkarın veya maskeleyin:\n"
-      : "GİZLİ BİLGİ TESPİT EDİLDİ. Bu bilgileri göndermeye yetkili değilseniz gönderimi iptal edin:\n";
+    var mesaj = "GİZLİ BİLGİ TESPİT EDİLDİ. Bu bilgileri göndermeye yetkili değilseniz gönderimi iptal edin:\n";
+    if (AYARLAR.BULGUDA_ENGELLE) mesaj = "GİZLİ BİLGİ TESPİT EDİLDİ. Göndermeden önce bu bilgileri çıkarın veya maskeleyin:\n";
     var opts = { allowEvent: false, errorMessage: kisalt(mesaj + satirlar.join("\n"), 500) };
     if (!AYARLAR.BULGUDA_ENGELLE) soruAyari(opts);
     basligiYaz("BULGU-KULLANICI-ONAYI").then(function () { event.completed(opts); });
