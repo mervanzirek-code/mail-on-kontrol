@@ -700,13 +700,34 @@ function taraMetin(metin) {
 /* =====================================================================
  * OUTLOOK OLAY İŞLEYİCİSİ
  * ===================================================================== */
-function asenkron(nesne, metot, argumanlar) {
+// Son çalıştırılan Outlook işlemi (takılma olursa uyarıda gösterilir)
+var SON_ADIM = "başlangıç";
+var ISLEM_ZAMAN_SINIRI_MS = 10000;
+
+function asenkron(nesne, metot, argumanlar, etiket) {
+  var ad = etiket || metot;
+  SON_ADIM = ad;
   return new Promise(function (coz, reddet) {
+    var bitti = false;
+    var sayac = setTimeout(function () {
+      if (bitti) return;
+      bitti = true;
+      reddet(new Error("zaman aşımı: " + ad));
+    }, ISLEM_ZAMAN_SINIRI_MS);
     var a = (argumanlar || []).concat([function (r) {
-      if (r.status === Office.AsyncResultStatus.Succeeded) coz(r.value);
-      else reddet(r.error || new Error(metot + " başarısız"));
+      if (bitti) return;
+      bitti = true;
+      clearTimeout(sayac);
+      if (r && r.status === Office.AsyncResultStatus.Succeeded) coz(r.value);
+      else reddet(new Error(ad + " başarısız" + ((r && r.error && r.error.message) ? " (" + r.error.message + ")" : "")));
     }]);
-    nesne[metot].apply(nesne, a);
+    try {
+      nesne[metot].apply(nesne, a);
+    } catch (e) {
+      bitti = true;
+      clearTimeout(sayac);
+      reddet(new Error(ad + " çağrılamadı (" + ((e && e.message) || e) + ")"));
+    }
   });
 }
 
@@ -722,9 +743,9 @@ function denetle() {
   var item = Office.context.mailbox.item;
   var sonuc = { bulgular: [], taranamayan: [], disAlici: 0, ekSayisi: 0 };
   return Promise.all([
-    asenkron(item.to, "getAsync"),
-    asenkron(item.cc, "getAsync"),
-    asenkron(item.bcc, "getAsync")
+    asenkron(item.to, "getAsync", [], "Kime alanı"),
+    asenkron(item.cc, "getAsync", [], "Bilgi alanı"),
+    asenkron(item.bcc, "getAsync", [], "Gizli alanı")
   ]).then(function (listeler) {
     var adresler = [].concat(listeler[0] || [], listeler[1] || [], listeler[2] || []).map(function (a) {
       return (a.emailAddress || "").toLowerCase();
@@ -733,14 +754,14 @@ function denetle() {
     if (AYARLAR.IC_ALAN_ADLARI.length && sonuc.disAlici === 0) { sonuc.icGonderim = true; return sonuc; }
 
     return Promise.all([
-      asenkron(item.subject, "getAsync"),
-      asenkron(item.body, "getAsync", [Office.CoercionType.Text])
+      asenkron(item.subject, "getAsync", [], "Konu"),
+      asenkron(item.body, "getAsync", [Office.CoercionType.Text], "E-posta metni")
     ]).then(function (r) {
       taraMetin((r[0] || "") + "\n" + (r[1] || "")).forEach(function (b) {
         b.yer = "E-posta metni";
         sonuc.bulgular.push(b);
       });
-      return asenkron(item, "getAttachmentsAsync");
+      return asenkron(item, "getAttachmentsAsync", [], "Ek listesi");
     }).then(function (ekler) {
       ekler = (ekler || []).filter(function (e) { return !e.isInline; });
       sonuc.ekSayisi = ekler.length;
@@ -750,7 +771,7 @@ function denetle() {
             sonuc.taranamayan.push(ek.name + " (" + AYARLAR.MAKS_EK_MB + " MB'tan büyük)");
             return;
           }
-          return asenkron(item, "getAttachmentContentAsync", [ek.id]).then(function (icerik) {
+          return asenkron(item, "getAttachmentContentAsync", [ek.id], "Ek içeriği: " + ek.name).then(function (icerik) {
             if (!icerik || icerik.format !== "base64") {
               sonuc.taranamayan.push(ek.name + " (bulut eki veya ekli e-posta)");
               return;
@@ -762,6 +783,8 @@ function denetle() {
               if (e && e.taranamadi) sonuc.taranamayan.push(ek.name + " (" + e.message + ")");
               else sonuc.taranamayan.push(ek.name + " (okunamadı)");
             }
+          }, function (e) {
+            sonuc.taranamayan.push(ek.name + " (" + ((e && e.message) || "okunamadı") + ")");
           });
         });
       }, Promise.resolve());
@@ -778,7 +801,12 @@ function basligiYaz(deger) {
   try {
     var item = Office.context.mailbox.item;
     if (!item.internetHeaders) return Promise.resolve();
-    return asenkron(item.internetHeaders, "setAsync", [{ "X-Mail-On-Kontrol": deger }]).catch(function () {});
+    // Başlık yazımı en fazla 3 saniye beklenir; yanıt gelmezse gönderim kararı yine verilir
+    return new Promise(function (coz) {
+      var sayac = setTimeout(coz, 3000);
+      asenkron(item.internetHeaders, "setAsync", [{ "X-Mail-On-Kontrol": deger }], "Kayıt başlığı")
+        .then(function () { clearTimeout(sayac); coz(); }, function () { clearTimeout(sayac); coz(); });
+    });
   } catch (e) {
     return Promise.resolve();
   }
@@ -826,7 +854,26 @@ function sonuclandir(event, s) {
   basligiYaz("TEMIZ").then(function () { event.completed({ allowEvent: true }); });
 }
 
-function onMessageSendHandler(event) {
+function onMessageSendHandler(olay) {
+  var bitti = false, bekci;
+  // event.completed yalnızca bir kez çağrılır
+  var event = {
+    completed: function (secenekler) {
+      if (bitti) return;
+      bitti = true;
+      clearTimeout(bekci);
+      olay.completed(secenekler);
+    }
+  };
+  // Güvenlik ağı: 40 saniyede bitmezse kullanıcıya takılan adımı söyleyip karar bırakır
+  bekci = setTimeout(function () {
+    event.completed(soruAyari({
+      allowEvent: false,
+      errorMessage: kisalt("Mail Ön Kontrol taramayı zamanında bitiremedi (son adım: " + SON_ADIM +
+        "). Dosyanızın gizli bilgi içermediğinden eminseniz \"Yine de Gönder\"i seçin.", 500)
+    }));
+  }, 40000);
+  SON_ADIM = "başlangıç";
   denetle()
     .then(function (s) { sonuclandir(event, s); })
     .catch(function (e) {
