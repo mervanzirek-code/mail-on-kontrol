@@ -854,7 +854,7 @@ function sonuclandir(event, s) {
   basligiYaz("TEMIZ").then(function () { event.completed({ allowEvent: true }); });
 }
 
-var SURUM = "1.3";
+var SURUM = "1.4";
 
 function durumMetni(gecti) {
   if (gecti) return " (temiz).";
@@ -910,11 +910,15 @@ function onMessageSendHandler(olay) {
 }
 
 // Manifest'teki FunctionName ile JavaScript işlevini eşler (zorunlu)
+// Outlook on Mac ve web, Office.js yüklenmesinin tamamlanması için Office.onReady() çağrısını şart koşar.
 if (typeof Office !== "undefined") {
   if (Office.actions) {
     Office.actions.associate("onMessageSendHandler", onMessageSendHandler);
-  } else if (Office.onReady) {
-    Office.onReady(function () { Office.actions.associate("onMessageSendHandler", onMessageSendHandler); });
+  }
+  if (Office.onReady) {
+    Office.onReady(function () {
+      if (Office.actions) Office.actions.associate("onMessageSendHandler", onMessageSendHandler);
+    });
   }
 }
 
