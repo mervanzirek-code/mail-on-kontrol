@@ -6,7 +6,7 @@
  *   - TR ve yabancı IBAN (mod-97 doğrulamalı)
  *   - TC Kimlik No (resmi sağlama algoritmalı)
  *   - Kredi kartı numarası (Luhn doğrulamalı)
- *   - Gizlilik ibareleri (GİZLİ, HİZMETE ÖZEL vb.)
+ *   - Büyük harfle yazılmış gizlilik etiketleri (anahtar kelime listesi)
  * Desteklenen ekler: .docx .xlsx .pptx (ve makrolu sürümleri), .pdf (metin içerenler),
  * .txt .csv .xml .html .json vb., .zip (içindekiler dahil).
  *
@@ -22,6 +22,8 @@ function outlookaKaydol() {
   try {
     if (typeof Office !== "undefined" && Office.actions) {
       Office.actions.associate("onMessageSendHandler", onMessageSendHandler);
+      Office.actions.associate("onNewMessageComposeHandler", onNewMessageComposeHandler);
+      Office.actions.associate("onMessageRecipientsChangedHandler", onMessageRecipientsChangedHandler);
     }
   } catch (e) { /* devam */ }
 }
@@ -303,7 +305,8 @@ function zipOku(b, g) {
 /* =====================================================================
  * DOSYA TÜRLERİNE GÖRE METİN ÇIKARMA
  * ===================================================================== */
-var METIN_UZ = ["txt", "csv", "log", "json", "xml", "html", "htm", "md", "tsv", "ini", "sql", "eml"];
+var METIN_UZ = ["txt", "csv", "log", "json", "xml", "html", "htm", "md", "tsv", "ini", "sql", "eml",
+  "js", "ts", "py", "ps1", "bat", "cmd", "sh", "yml", "yaml", "iss", "cfg", "conf", "properties", "css", "php", "java", "cs", "c", "cpp", "h", "go", "rb", "vb", "vbs"];
 var OFFICE_UZ = ["docx", "docm", "xlsx", "xlsm", "pptx", "pptm", "dotx", "xltx", "potx"];
 var GORSEL_UZ = ["jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "heic", "webp"];
 
@@ -705,11 +708,18 @@ function taraMetin(metin) {
     if (rakam.length >= 13 && rakam.length <= 19 && luhnGecerli(rakam)) ekle("Kredi kartı no", rakam, maskele(rakam, 4, 4));
   }
 
-  // 5) Gizlilik ibareleri (tam kelime)
-  var kucuk = trKucuk(metin), harf = "a-z0-9_çğıöşüâîû";
+  // 5) Gizlilik ibareleri: yalnızca sınıflandırma etiketi olarak BÜYÜK HARFLE yazıldığında
+  //    (anahtar kelimenin tamamı büyük harfle). Cümle içindeki "gizli bilgi" gibi ifadeler sayılmaz.
+  //    Türkçe karakter kullanılmadan büyük harfle yazılmış etiketler de tanınır.
+  var harf = "A-Za-z0-9_ÇĞİÖŞÜçğıöşüÂÎÛâîû";
   AYARLAR.ANAHTAR_KELIMELER.forEach(function (k) {
-    var re = new RegExp("(^|[^" + harf + "])" + regexKacis(k) + "(?=$|[^" + harf + "])");
-    if (re.test(kucuk)) ekle("Gizlilik ibaresi", k, '"' + trBuyuk(k) + '"');
+    var buyuk = trBuyuk(String(k).trim());
+    var ascii = buyuk.replace(/İ/g, "I").replace(/Ö/g, "O").replace(/Ü/g, "U")
+      .replace(/Ş/g, "S").replace(/Ç/g, "C").replace(/Ğ/g, "G");
+    var desen = regexKacis(buyuk).replace(/ +/g, "\\s+");
+    if (ascii !== buyuk) desen += "|" + regexKacis(ascii).replace(/ +/g, "\\s+");
+    var re = new RegExp("(^|[^" + harf + "])(" + desen + ")(?=$|[^" + harf + "])");
+    if (re.test(metin)) ekle("Gizlilik ibaresi", k, '"' + buyuk + '"');
   });
 
   return bulgular;
@@ -837,27 +847,39 @@ function soruAyari(secenekler) {
   return secenekler;
 }
 
+// Uyarı metnini hazırlar: sade metin (tüm sürümler) + biçimli metin (Mailbox 1.15+)
+function mesajEkle(secenekler, baslik, satirlar, kapanis) {
+  var duz = baslik + " " + satirlar.join("; ") + ".";
+  if (kapanis) duz += " " + kapanis;
+  secenekler.errorMessage = kisalt(duz, 500);
+  try {
+    if (Office.context.requirements.isSetSupported("Mailbox", "1.15")) {
+      var md = "**" + baslik + "**\n\n" + satirlar.join("\n\n");
+      if (kapanis) md += "\n\n" + kapanis;
+      secenekler.errorMessageMarkdown = kisalt(md, 500);
+    }
+  } catch (e) { /* sade metin yeterli */ }
+  return secenekler;
+}
+
 function sonuclandir(event, s) {
   if (s.icGonderim) {
     event.completed({ allowEvent: true });
     return;
   }
   if (s.bulgular.length) {
-    var satirlar = s.bulgular.map(function (b) { return "• " + b.yer + ": " + b.tur + " " + b.deger; });
-    var mesaj = "GİZLİ BİLGİ TESPİT EDİLDİ. Bu bilgileri göndermeye yetkili değilseniz gönderimi iptal edin:\n";
-    if (AYARLAR.BULGUDA_ENGELLE) mesaj = "GİZLİ BİLGİ TESPİT EDİLDİ. Göndermeden önce bu bilgileri çıkarın veya maskeleyin:\n";
-    var opts = { allowEvent: false, errorMessage: kisalt(mesaj + satirlar.join("\n"), 500) };
+    var satirlar = s.bulgular.map(function (b) { return b.yer + ": " + b.tur + " " + b.deger; });
+    var kapanis = "Bu bilgileri göndermeye yetkili değilseniz gönderimi iptal edin.";
+    if (AYARLAR.BULGUDA_ENGELLE) kapanis = "Göndermeden önce bu bilgileri çıkarın veya maskeleyin.";
+    var opts = mesajEkle({ allowEvent: false }, "Gizli bilgi tespit edildi:", satirlar, kapanis);
     if (!AYARLAR.BULGUDA_ENGELLE) soruAyari(opts);
     basligiYaz("BULGU-KULLANICI-ONAYI").then(function () { event.completed(opts); });
     return;
   }
   if (s.taranamayan.length && AYARLAR.TARANAMAYAN_EKTE_SOR) {
-    var m = "Şu ek(ler) otomatik taranamadı:\n" +
-      s.taranamayan.map(function (t) { return "• " + t; }).join("\n");
-    m = kisalt(m, 330) + "\n\nDosyanız güvenli mi? TC Kimlik No, IBAN veya gizli bilgi içermediğinden eminseniz \"Yine de Gönder\"i seçin.";
-    basligiYaz("TARANAMAYAN-EK-KULLANICI-ONAYI").then(function () {
-      event.completed(soruAyari({ allowEvent: false, errorMessage: kisalt(m, 500) }));
-    });
+    var o2 = mesajEkle({ allowEvent: false }, "Şu ek(ler) otomatik taranamadı:", s.taranamayan,
+      "Dosyanız güvenli mi? TC Kimlik No, IBAN veya gizli bilgi içermediğinden eminseniz \"Yine de Gönder\"i seçin.");
+    basligiYaz("TARANAMAYAN-EK-KULLANICI-ONAYI").then(function () { event.completed(soruAyari(o2)); });
     return;
   }
   if (AYARLAR.HER_DIS_GONDERIMDE_SOR && s.ekSayisi > 0 && s.disAlici > 0) {
@@ -872,7 +894,7 @@ function sonuclandir(event, s) {
   basligiYaz("TEMIZ").then(function () { event.completed({ allowEvent: true }); });
 }
 
-var SURUM = "1.5";
+var SURUM = "1.7";
 
 function durumMetni(gecti) {
   if (gecti) return " (temiz).";
@@ -880,17 +902,52 @@ function durumMetni(gecti) {
 }
 
 // E-posta penceresinin üstünde bilgi şeridi gösterir (tanılama amaçlı; sonucu beklemez)
-function bildirimGoster(metin) {
+function bildirimGoster(metin, hata, geriDonus) {
+  var bitir = geriDonus || function () {};
   try {
     var item = Office.context.mailbox.item;
-    if (!item || !item.notificationMessages) return;
-    item.notificationMessages.replaceAsync("mailOnKontrol", {
-      type: "informationalMessage",
-      message: metin,
-      icon: "Icon.16x16",
-      persistent: false
-    }, function () {});
-  } catch (e) { /* önemsiz */ }
+    if (!item || !item.notificationMessages) { bitir(); return; }
+    var ayar = { type: "informationalMessage", message: kisalt(metin, 150), icon: "Icon.16x16", persistent: false };
+    if (hata) ayar = { type: "errorMessage", message: kisalt(metin, 150) };
+    item.notificationMessages.replaceAsync("mailOnKontrol", ayar, function () { bitir(); });
+  } catch (e) { bitir(); }
+}
+
+/* =====================================================================
+ * OUTLOOK MOBİL (iPhone / Android)
+ * Mobil uygulamada "Gönder" olayı yoktur; bu yüzden burada yalnızca UYARI verilir.
+ * Durdurma işini Exchange sunucu kuralı yapar (eklentiden geçmeyen e-postada
+ * X-Mail-On-Kontrol başlığı bulunmaz).
+ * ===================================================================== */
+var MOBIL_UYARI = "Telefondan gönderilen e-postalar Gönder anında taranmaz. TC Kimlik No, IBAN veya gizli bilgi göndermeyin.";
+
+function onNewMessageComposeHandler(event) {
+  bildirimGoster(MOBIL_UYARI, false, function () { event.completed(); });
+}
+
+function onMessageRecipientsChangedHandler(event) {
+  var bitti = false;
+  function bitir() { if (!bitti) { bitti = true; event.completed(); } }
+  setTimeout(bitir, 20000);
+  var item = Office.context.mailbox.item;
+  Promise.all([
+    asenkron(item.to, "getAsync", [], "Kime alanı"),
+    asenkron(item.cc, "getAsync", [], "Bilgi alanı"),
+    asenkron(item.bcc, "getAsync", [], "Gizli alanı"),
+    asenkron(item.subject, "getAsync", [], "Konu"),
+    asenkron(item.body, "getAsync", [Office.CoercionType.Text], "E-posta metni")
+  ]).then(function (r) {
+    var adresler = [].concat(r[0] || [], r[1] || [], r[2] || []).map(function (a) { return (a.emailAddress || "").toLowerCase(); });
+    var dis = adresler.filter(function (a) { return !icAdres(a); }).length;
+    if (dis === 0 && AYARLAR.IC_ALAN_ADLARI.length) { bildirimGoster(MOBIL_UYARI, false, bitir); return; }
+    var bulgular = taraMetin((r[3] || "") + "\n" + (r[4] || ""));
+    if (bulgular.length) {
+      var ozet = bulgular.map(function (b) { return b.tur + " " + b.deger; }).join(", ");
+      bildirimGoster("Gizli bilgi tespit edildi (" + ozet + "). Bu e-posta sunucu tarafından durdurulabilir.", true, bitir);
+    } else {
+      bildirimGoster(MOBIL_UYARI, false, bitir);
+    }
+  }).catch(function () { bildirimGoster(MOBIL_UYARI, false, bitir); });
 }
 
 function onMessageSendHandler(olay) {
@@ -932,6 +989,6 @@ function onMessageSendHandler(olay) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     taraMetin: taraMetin, icerikMetni: icerikMetni, inflateRaw: inflateRaw, base64Coz: base64Coz,
-    onMessageSendHandler: onMessageSendHandler, AYARLAR: AYARLAR
+    onMessageSendHandler: onMessageSendHandler, onNewMessageComposeHandler: onNewMessageComposeHandler, onMessageRecipientsChangedHandler: onMessageRecipientsChangedHandler, AYARLAR: AYARLAR
   };
 }
