@@ -57,7 +57,16 @@ var AYARLAR = {
   ANAHTAR_KELIMELER: ["gizli", "çok gizli", "hizmete özel", "kişiye özel", "ticari sır"],
 
   // Bu boyuttan büyük ekler taranmaz, "taranamadı" sayılır (MB)
-  MAKS_EK_MB: 15
+  MAKS_EK_MB: 15,
+
+  // Merkezi kayıt sunucusu (izleme paneli). Boş bırakılırsa kayıt gönderilmez.
+  // Kuruluşta mutlaka https adres kullanın (ör. https://kayit.firma.com.tr).
+  // Not: Bu anahtar yalnızca kayıt eklemeye yarar; kod herkese açık bir yerde duruyorsa görülebilir.
+  SUNUCU_ADRESI: "http://localhost:8787",
+  SUNUCU_ANAHTARI: "test123",
+
+  // Temiz (bulgusuz) gönderimler de panele yazılsın mı?
+  TEMIZ_GONDERIMI_KAYDET: true
 };
 
 /* =====================================================================
@@ -747,7 +756,11 @@ function asenkron(nesne, metot, argumanlar, etiket) {
       bitti = true;
       clearTimeout(sayac);
       if (r && r.status === Office.AsyncResultStatus.Succeeded) coz(r.value);
-      else reddet(new Error(ad + " başarısız" + ((r && r.error && r.error.message) ? " (" + r.error.message + ")" : "")));
+      else {
+        var neden = "";
+        if (r && r.error && r.error.message) neden = " (" + r.error.message + ")";
+        reddet(new Error(ad + " başarısız" + neden));
+      }
     }]);
     try {
       nesne[metot].apply(nesne, a);
@@ -779,6 +792,7 @@ function denetle() {
       return (a.emailAddress || "").toLowerCase();
     });
     sonuc.disAlici = adresler.filter(function (a) { return !icAdres(a); }).length;
+    sonuc.alicilar = adresler;
     if (AYARLAR.IC_ALAN_ADLARI.length && sonuc.disAlici === 0) { sonuc.icGonderim = true; return sonuc; }
 
     return Promise.all([
@@ -793,6 +807,7 @@ function denetle() {
     }).then(function (ekler) {
       ekler = (ekler || []).filter(function (e) { return !e.isInline; });
       sonuc.ekSayisi = ekler.length;
+      sonuc.ekAdlari = ekler.map(function (e) { return e.name; });
       return ekler.reduce(function (zincir, ek) {
         return zincir.then(function () {
           if (ek.size > AYARLAR.MAKS_EK_MB * 1024 * 1024) {
@@ -894,7 +909,7 @@ function sonuclandir(event, s) {
   basligiYaz("TEMIZ").then(function () { event.completed({ allowEvent: true }); });
 }
 
-var SURUM = "1.7";
+var SURUM = "1.8";
 
 function durumMetni(gecti) {
   if (gecti) return " (temiz).";
@@ -950,6 +965,82 @@ function onMessageRecipientsChangedHandler(event) {
   }).catch(function () { bildirimGoster(MOBIL_UYARI, false, bitir); });
 }
 
+/* =====================================================================
+ * MERKEZİ KAYIT — her gönderim kararı izleme paneline bildirilir
+ * (yalnızca maskeli değerler gönderilir; e-posta içeriği gönderilmez)
+ * ===================================================================== */
+var SON_DENETIM = null;
+
+function kullaniciBilgisi() {
+  var k = "", c = "Outlook";
+  try { k = Office.context.mailbox.userProfile.emailAddress || ""; } catch (e) { /* yok */ }
+  try {
+    var d = Office.context.diagnostics;
+    c = "Outlook " + (d.platform || "") + " " + (d.version || "");
+  } catch (e) { /* yok */ }
+  return { kullanici: k, cihaz: c.replace(/\s+/g, " ").trim() };
+}
+
+function kayitGonder(secenekler) {
+  return new Promise(function (bitti) {
+    try {
+      if (!AYARLAR.SUNUCU_ADRESI) return bitti();
+      var s = SON_DENETIM || { bulgular: [], taranamayan: [], alicilar: [], ekAdlari: [] };
+      var gecti = !!(secenekler && secenekler.allowEvent);
+      var sorulan = !!(secenekler && secenekler.sendModeOverride);
+      var sonucAdi = "IZIN", aciklama = "";
+      if (!gecti && s.bulgular && s.bulgular.length) {
+        sonucAdi = "UYARI";
+        if (AYARLAR.BULGUDA_ENGELLE) sonucAdi = "ENGELLENDI";
+        if (!AYARLAR.BULGUDA_ENGELLE) aciklama = "Kullanıcıya \"Yine de Gönder\" seçeneği sunuldu";
+      } else if (!gecti && s.taranamayan && s.taranamayan.length) {
+        sonucAdi = "TARANAMADI";
+        aciklama = "Kullanıcıya \"Dosyanız güvenli mi?\" soruldu: " + s.taranamayan.join("; ");
+      } else if (!gecti) {
+        sonucAdi = "ENGELLENDI";
+        if (sorulan) sonucAdi = "UYARI";
+        aciklama = (secenekler && secenekler.errorMessage) || "";
+      } else if (!AYARLAR.TEMIZ_GONDERIMI_KAYDET) {
+        return bitti();
+      }
+      var kb = kullaniciBilgisi();
+      var olay = {
+        zaman: new Date().toISOString().replace("T", " ").slice(0, 19),
+        kaynak: "Outlook eklentisi",
+        kullanici: kb.kullanici,
+        cihaz: kb.cihaz,
+        kanal: "E-posta gönderimi",
+        hedef: (s.alicilar || []).join(", ").slice(0, 300),
+        dosya: (s.ekAdlari || []).join(", ").slice(0, 300),
+        sonuc: sonucAdi,
+        bulgular: (s.bulgular || []).map(function (b) { return b.yer + ": " + b.tur + " " + b.deger; }),
+        aciklama: aciklama.slice(0, 400)
+      };
+      var adres = AYARLAR.SUNUCU_ADRESI.replace(/\/+$/, "") + "/api/kayit";
+      var govde = JSON.stringify(olay);
+      var sayac = setTimeout(bitti, 2500);           // sunucuya ulaşılamazsa gönderimi bekletme
+      var son = function () { clearTimeout(sayac); bitti(); };
+      if (typeof fetch === "function") {
+        fetch(adres, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Anahtar": AYARLAR.SUNUCU_ANAHTARI },
+          body: govde,
+          mode: "cors"
+        }).then(son, son);
+      } else {
+        var x = new XMLHttpRequest();
+        x.open("POST", adres, true);
+        x.setRequestHeader("Content-Type", "application/json");
+        x.setRequestHeader("X-Anahtar", AYARLAR.SUNUCU_ANAHTARI);
+        x.onloadend = son;
+        x.send(govde);
+      }
+    } catch (e) {
+      bitti();
+    }
+  });
+}
+
 function onMessageSendHandler(olay) {
   var bitti = false, bekci;
   // event.completed yalnızca bir kez çağrılır
@@ -960,7 +1051,7 @@ function onMessageSendHandler(olay) {
       clearTimeout(bekci);
       var gecti = secenekler && secenekler.allowEvent;
       bildirimGoster("Mail Ön Kontrol v" + SURUM + ": tarama tamamlandı" + durumMetni(gecti));
-      olay.completed(secenekler);
+      kayitGonder(secenekler).then(function () { olay.completed(secenekler); });
     }
   };
   // Güvenlik ağı: 40 saniyede bitmezse kullanıcıya takılan adımı söyleyip karar bırakır
@@ -973,8 +1064,9 @@ function onMessageSendHandler(olay) {
   }, 40000);
   SON_ADIM = "başlangıç";
   bildirimGoster("Mail Ön Kontrol v" + SURUM + " e-postayı tarıyor…");
+  SON_DENETIM = null;
   denetle()
-    .then(function (s) { sonuclandir(event, s); })
+    .then(function (s) { SON_DENETIM = s; sonuclandir(event, s); })
     .catch(function (e) {
       event.completed(soruAyari({
         allowEvent: false,
